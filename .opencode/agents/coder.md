@@ -28,6 +28,12 @@ permissions:
     resource: "go vet *"
     effect: allow
   - action: shell
+    resource: "go get *"
+    effect: allow
+  - action: shell
+    resource: "go mod *"
+    effect: allow
+  - action: shell
     resource: "gofmt *"
     effect: allow
   - action: shell

@@ -55,11 +55,24 @@ Use one shape everywhere so the frontend never branches on structure:
 
 Keep the envelope consistent; `{"result":..., "error":...}` or an equivalent field pair is fine as long as it is the same for every endpoint.
 
+## Testing library
+
+Tests use `github.com/stretchr/testify` (`require` / `assert`). Add it once with
+`go get github.com/stretchr/testify` (or `go mod tidy`) and commit the resulting
+`go.mod` / `go.sum`. Everything else stays on the standard library — testify is a
+test-only dependency.
+
 ## Table-driven unit tests
 
 Test the domain package with a table of cases:
 
 ```go
+import (
+    "testing"
+
+    "github.com/stretchr/testify/require"
+)
+
 func TestDivide(t *testing.T) {
     cases := []struct {
         name    string
@@ -74,34 +87,44 @@ func TestDivide(t *testing.T) {
     for _, tc := range cases {
         t.Run(tc.name, func(t *testing.T) {
             got, err := Divide(tc.a, tc.b)
-            if !errors.Is(err, tc.wantErr) {
-                t.Fatalf("Divide(%v, %v) err = %v, want %v", tc.a, tc.b, err, tc.wantErr)
-            }
-            if got != tc.want {
-                t.Fatalf("Divide(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
-            }
+            require.ErrorIs(t, err, tc.wantErr)
+            require.Equal(t, tc.want, got)
         })
     }
 }
 ```
 
-Use `t.Run` per case for readable failure output, and `errors.Is` (not `==`) so wrapped errors still match.
+Use `t.Run` per case for readable failure output. `require.ErrorIs` compares with `errors.Is` semantics (not `==`) so wrapped errors still match, and `require.ErrorIs(t, err, nil)` asserts "no error". Reach for `require` when the rest of the case depends on the assertion (fail fast); use `assert` for independent checks that should all run.
 
 ## httptest handler tests
 
 Exercise the HTTP layer with `net/http/httptest` — no real socket:
 
 ```go
-func TestDivideHandler(t *testing.T) {
-    req := httptest.NewRequest(http.MethodPost, "/divide", strings.NewReader(`{"a":8,"b":2}`))
-    rec := httptest.NewRecorder()
-    s := httpapi.New(domain.New())
-    s.ServeHTTP(rec, req)
+import (
+    "encoding/json"
+    "net/http"
+    "net/http/httptest"
+    "strings"
+    "testing"
 
-    if rec.Code != http.StatusOK {
-        t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body)
+    "github.com/stretchr/testify/require"
+)
+
+func TestEvaluateHandler(t *testing.T) {
+    req := httptest.NewRequest(http.MethodPost, "/evaluate", strings.NewReader(`{"operation":"divide","a":8,"b":2}`))
+    req.Header.Set("Content-Type", "application/json")
+    rec := httptest.NewRecorder()
+
+    httpapi.New(domain.New()).ServeHTTP(rec, req)
+
+    require.Equal(t, http.StatusOK, rec.Code)
+
+    var got struct {
+        Result float64 `json:"result"`
     }
-    // assert the envelope fields, e.g. decode into a struct and check result.
+    require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+    require.Equal(t, 4.0, got.Result)
 }
 ```
 
@@ -112,4 +135,5 @@ Assert status code, envelope shape, and value — not just that the request didn
 - `gofmt -l .` must print nothing; run `gofmt -w` on changed files.
 - `go vet ./...` must pass with no warnings.
 - `go build ./...` and `go test ./...` must pass before hand-off.
+- `go mod tidy` leaves `go.mod`/`go.sum` clean.
 - Check coverage with `go test -cover ./...`; add cases for untested branches rather than ignoring the number.
