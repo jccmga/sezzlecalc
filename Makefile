@@ -1,0 +1,39 @@
+.PHONY: help check backend-build backend-test backend-vet backend-cover frontend-install frontend-test frontend-lint frontend-build
+
+help:
+	@echo "Available targets:"
+	@echo "  check              Run all build + test gates"
+	@echo "  backend-build      Build the Go backend"
+	@echo "  backend-test       Run backend tests with the race detector"
+	@echo "  backend-vet        Vet the Go backend and check formatting"
+	@echo "  backend-cover      Run backend tests, write backend/coverage.txt"
+	@echo "  frontend-install   Install frontend dependencies"
+	@echo "  frontend-test      Run the frontend test suite"
+	@echo "  frontend-lint      Lint the frontend"
+	@echo "  frontend-build     Build the frontend for production"
+
+check: backend-build backend-test backend-vet frontend-test frontend-lint frontend-build
+
+backend-build:
+	cd backend && go build ./...
+
+backend-test:
+	cd backend && go test -race ./...
+
+backend-vet:
+	cd backend && go vet ./... && test -z "$$(gofmt -l .)"
+
+backend-cover:
+	cd backend && go test -coverprofile=coverage.txt ./... && go tool cover -func=coverage.txt
+
+frontend-install:
+	cd frontend && npm install
+
+frontend-test:
+	cd frontend && npm run test
+
+frontend-lint:
+	cd frontend && npm run lint
+
+frontend-build:
+	cd frontend && npm run build
