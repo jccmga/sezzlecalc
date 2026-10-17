@@ -1,9 +1,5 @@
 // Package httpapi provides the calculator HTTP handlers, request/response
 // types, panic recovery, and the single error-to-status mapper.
-//
-// NewHandler is the only exported symbol. It builds the routing surface
-// (POST /evaluate and GET /health), wraps it in panic recovery, and returns
-// the fully wired http.Handler.
 package httpapi
 
 import (
@@ -20,19 +16,18 @@ import (
 	"sezzlecalc/backend/internal/calc"
 )
 
-// maxBodyBytes caps the JSON request body; the limit is inclusive.
-const maxBodyBytes = 1024
+const (
+	maxBodyBytes = 1024
+	unaryArity   = 1
+	binaryArity  = 2
+)
 
-// Local sentinels, matched only by writeError. They carry the client-safe
-// meaning; writeError is the sole chooser of a status code and client string.
 var (
 	errInvalidInput     = errors.New("invalid input")
-	errNonFiniteResult  = errors.New("non-finite result")
 	errMethodNotAllowed = errors.New("method not allowed")
 	errInternal         = errors.New("internal error")
 )
 
-// server carries the injected logger used for server-side error reporting.
 type server struct {
 	logger *slog.Logger
 }
@@ -73,60 +68,125 @@ type healthResponse struct {
 	Status string `json:"status"`
 }
 
-// evaluateHandler implements POST /evaluate. Checks run in a fixed order:
-// method, Content-Type, body cap, decode, operand presence, operand
-// finiteness, calc.Evaluate, result finiteness, success.
 func (s *server) evaluateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeError(w, errMethodNotAllowed)
+	if err := requirePost(r); err != nil {
+		s.writeError(w, err)
 		return
 	}
 
-	mediatype, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediatype != "application/json" {
-		s.writeError(w, errInvalidInput)
+	if err := requireJSONContentType(r); err != nil {
+		s.writeError(w, err)
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-
-	dec := json.NewDecoder(r.Body)
-	var req evaluateRequest
-	if err := dec.Decode(&req); err != nil {
-		s.writeError(w, fmt.Errorf("%w: %w", errInvalidInput, err))
-		return
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		s.writeError(w, fmt.Errorf("%w: trailing data", errInvalidInput))
-		return
-	}
-
-	if req.A == nil || req.B == nil {
-		s.writeError(w, errInvalidInput)
-		return
-	}
-
-	if math.IsNaN(*req.A) || math.IsInf(*req.A, 0) || math.IsNaN(*req.B) || math.IsInf(*req.B, 0) {
-		s.writeError(w, errInvalidInput)
-		return
-	}
-
-	result, err := calc.Evaluate(req.Operation, *req.A, *req.B)
+	req, err := decodeEvaluateRequest(w, r)
 	if err != nil {
 		s.writeError(w, err)
 		return
 	}
 
-	if math.IsNaN(result) || math.IsInf(result, 0) {
-		s.writeError(w, errNonFiniteResult)
+	if err := validateOperands(req); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	result, err := calc.Evaluate(req.Operation, operandValue(req.A), operandValue(req.B))
+	if err != nil {
+		s.writeError(w, err)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, evaluateResponse{Result: result})
 }
 
-// healthHandler implements GET /health. It reads no body and checks no
-// Content-Type.
+func requirePost(r *http.Request) error {
+	if r.Method != http.MethodPost {
+		return errMethodNotAllowed
+	}
+
+	return nil
+}
+
+func requireJSONContentType(r *http.Request) error {
+	mediatype, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediatype != "application/json" {
+		return errInvalidInput
+	}
+
+	return nil
+}
+
+func decodeEvaluateRequest(w http.ResponseWriter, r *http.Request) (*evaluateRequest, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+
+	dec := json.NewDecoder(r.Body)
+
+	var req evaluateRequest
+	if err := dec.Decode(&req); err != nil {
+		return nil, fmt.Errorf("%w: %w", errInvalidInput, err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("%w: trailing data", errInvalidInput)
+	}
+
+	return &req, nil
+}
+
+func validateOperands(req *evaluateRequest) error {
+	if err := validateOperandPresence(req); err != nil {
+		return err
+	}
+
+	return validateOperandFiniteness(req)
+}
+
+func validateOperandPresence(req *evaluateRequest) error {
+	arity, known := calc.Arity(req.Operation)
+	if !known {
+		return nil
+	}
+
+	if req.A == nil {
+		return errInvalidInput
+	}
+
+	switch arity {
+	case binaryArity:
+		if req.B == nil {
+			return errInvalidInput
+		}
+	case unaryArity:
+		if req.B != nil {
+			return errInvalidInput
+		}
+	}
+
+	return nil
+}
+
+func validateOperandFiniteness(req *evaluateRequest) error {
+	if req.A != nil && isNonFinite(*req.A) {
+		return errInvalidInput
+	}
+	if req.B != nil && isNonFinite(*req.B) {
+		return errInvalidInput
+	}
+
+	return nil
+}
+
+func isNonFinite(operand float64) bool {
+	return math.IsNaN(operand) || math.IsInf(operand, 0)
+}
+
+func operandValue(operand *float64) float64 {
+	if operand == nil {
+		return 0
+	}
+
+	return *operand
+}
+
 func (s *server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.writeError(w, errMethodNotAllowed)
@@ -136,9 +196,6 @@ func (s *server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
 }
 
-// writeError is the only place an error becomes a status code and a client-safe
-// string. The raw error, wrapped cause, stack trace, and file paths never reach
-// the body. 5xx are logged at error level, 4xx at debug.
 func (s *server) writeError(w http.ResponseWriter, err error) {
 	var status int
 	var message string
@@ -148,9 +205,11 @@ func (s *server) writeError(w http.ResponseWriter, err error) {
 		status, message = http.StatusBadRequest, "invalid input"
 	case errors.Is(err, calc.ErrDivideByZero):
 		status, message = http.StatusUnprocessableEntity, "division by zero"
+	case errors.Is(err, calc.ErrSqrtNegative):
+		status, message = http.StatusUnprocessableEntity, "square root of negative number"
 	case errors.Is(err, calc.ErrUnknownOperation):
 		status, message = http.StatusUnprocessableEntity, "invalid operation"
-	case errors.Is(err, errNonFiniteResult):
+	case errors.Is(err, calc.ErrNonFiniteResult):
 		status, message = http.StatusUnprocessableEntity, "non-finite result"
 	case errors.Is(err, errMethodNotAllowed):
 		status, message = http.StatusMethodNotAllowed, "method not allowed"
@@ -174,9 +233,6 @@ func (s *server) writeError(w http.ResponseWriter, err error) {
 	writeJSON(w, status, errorResponse{Error: message})
 }
 
-// recover wraps next so a panicking handler is logged server-side and the client
-// receives 500 {"error":"internal error"}. The panic value and stack are logged,
-// never written to the body.
 func (s *server) recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -192,7 +248,6 @@ func (s *server) recover(next http.Handler) http.Handler {
 	})
 }
 
-// writeJSON sets Content-Type before WriteHeader and encodes v.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
