@@ -15,6 +15,9 @@ permissions:
   - action: edit
     resource: "docs/ai/*"
     effect: allow
+  - action: edit
+    resource: "*.gitignore"
+    effect: allow
   - action: shell
     resource: "*"
     effect: deny

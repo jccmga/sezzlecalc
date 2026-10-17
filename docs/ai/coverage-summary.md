@@ -1,6 +1,6 @@
-# Backend coverage summary
+# Full-stack coverage summary
 
-This covers the **backend Go packages** — `sezzlecalc/backend/internal/calc` (the pure domain) and `sezzlecalc/backend/internal/httpapi` (the HTTP layer). `cmd/server` is a thin entrypoint with no tests, so its `main()` shows 0% by design (see below). There is no frontend yet.
+This covers the whole repository: the **backend Go packages** — `sezzlecalc/backend/internal/calc` (the pure domain) and `sezzlecalc/backend/internal/httpapi` (the HTTP layer) — and the **frontend** (`frontend/`, Vite + React + TS, Vitest). `cmd/server` is a thin entrypoint with no tests, so its `main()` shows 0% by design (see below). The backend is measured with Go statement coverage (`-coverprofile`); the frontend is measured by test breadth (Vitest has no Go-style `-coverprofile` — see the frontend section at the end).
 
 ## Command
 
@@ -84,3 +84,59 @@ The `httpapi` suite (`backend/internal/httpapi/httpapi_test.go`) drives `NewHand
 ## Race detector
 
 `make backend-test` runs `go test -race ./...`, which passes — the race detector also validates the statelessness/concurrency expectation (no shared mutable state, no data races). The HTTP layer is stateless too (`server` holds only an immutable logger; handlers share no per-request state).
+
+---
+
+## Frontend coverage (Vitest)
+
+The frontend has **no Go-style `-coverprofile`**: Vitest reports test counts, not a statement-coverage percentage. Coverage here is therefore described as **test breadth** (what each suite exercises), not invented as a percentage. All 68 tests run under `environment: 'jsdom'` with `fetch` stubbed, so no test touches the network.
+
+## Command
+
+```sh
+make frontend-test        # cd frontend && npm run test
+```
+
+which runs `vitest run` (non-interactive; `make check` calls it). Install first with `make frontend-install` (`cd frontend && npm install`).
+
+## Result
+
+- **4 test files / 68 tests passed** (0 failed, 0 skipped — no `it.skip`/`describe.skip`/`.todo(` anywhere in `frontend/src`).
+- `make frontend-lint` (`eslint .`) reports **0 errors**; one known `react-refresh/only-export-components` **warning** on the shadcn `buttonVariants` export (a warning, not an error).
+- `make frontend-build` (`tsc -b && vite build`) passes; TypeScript `strict` is on with no `@ts-ignore`/`@ts-expect-error`.
+
+## What each suite covers
+
+### `src/components/Calculator.test.tsx` — 13 tests (component + state machine)
+
+Renders `<Calculator />` with a stubbed `fetch` and drives it with `@testing-library/user-event`. Queries are by role + accessible name, never by glyph text. It covers the three mandated component scenarios plus supporting behavior:
+
+- **T-1 (binary path)** — `1 2 × 4 =` sends **exactly one** `POST /api/evaluate` with `{ operation: 'multiply', a: 12, b: 4 }` (asserts URL, method, `Content-Type`, and exact body) and renders `48`.
+- **T-2 (unary path)** — `9 √` sends **exactly one** `POST /api/evaluate` with `{ operation: 'sqrt', a: 9 }` and asserts `'b' in body === false`; renders `3`.
+- **T-3 (invalid entry blocks the request)** — `5 Backspace √` leaves the entry empty so `fetch` is **never called** and the display stays `0`; a companion case asserts `=` with no pending operation issues no request.
+- Supporting cases: no request on mount; `±` toggles the sign without a request; `±` is a no-op on zero; a `422` error string renders verbatim; `AC` clears an error back to `0`; `busy` disables keys (with `aria-busy="true"`) but keeps `AC` enabled; operator replacement (`12 + 4 × =` → `multiply`); a unary preserves a pending `lhs`/`operator` (`9 + 3 √ =` → `{operation:'add', a:9, b:3}`); keyboard entry (`12*4{Enter}`) matches the keypad.
+
+### `src/lib/api.test.ts` — 13 tests (the `evaluate` client; mandated T-4)
+
+The **T-4** status/transport table, each case asserting the promise **resolves** (never rejects) to the exact expected outcome:
+
+- success `200` `{result:48}` → `{ok:true, value:48}`;
+- `422` `{error:'division by zero'}`, `400` `{error:'invalid input'}`, `500` `{error:'internal error'}` → returned **verbatim** as `{ok:false, error}`;
+- non-2xx without an error string → `TRANSPORT_ERROR`;
+- network failure (`TypeError`), abort (`AbortError`), non-JSON 2xx, non-JSON 500, and a 2xx without a finite numeric `result` (missing/`null`/string) → all `TRANSPORT_ERROR = 'Could not reach the server'`;
+- plus the request init: URL `/api/evaluate`, method `POST`, `Content-Type: application/json`, and a unary body with **no `b` key**.
+
+### `src/lib/validation.test.ts` — 25 tests (`parseEntry` + operation metadata)
+
+- `parseEntry` **accepts** `12`, `-5`, `3.`, `0.`, `.5`, `1e+21`, `1.5e-9`, `-0` (8 cases);
+- **rejects** `''`, `' '`, `'-'`, `'.'`, `'-.', 'abc'`, `'0x10'`, `'1,000'`, `'Infinity'`, `'NaN'`, `'1e999'`, `' 12 34'` (12 cases);
+- representative parses (`'12'`→12, `'-5'`→−5, `'.5'`→0.5, `'3.'`→3);
+- `BINARY_OPERATIONS` is exactly the five, `UNARY_OPERATIONS` exactly the two, and the `isBinaryOperation`/`isUnaryOperation` type guards return the right results.
+
+### `src/lib/format.test.ts` — 17 tests (`formatNumber`)
+
+The full 12-significant-digit table: `48 → '48'`, `0 → '0'`, `-0 → '0'`, `0.5 → '0.5'`, `-2.5 → '-2.5'`, `100 → '100'`, `1/3 → '0.333333333333'`, `Math.PI → '3.14159265359'`, `1e12 → '1e+12'`, `123456789012 → '123456789012'`, `1e21 → '1e+21'`, `1e-7 → '1e-7'`, `1.5e-9 → '1.5e-9'`, `1e-6 → '0.000001'`, `Infinity → 'Error'`, `NaN → 'Error'`, plus `MAX_SIGNIFICANT_DIGITS === 12`.
+
+## Scope note
+
+The frontend coverage is described by the **four test files and their 68 passing tests** above — there is no statement-coverage percentage for `frontend/` because Vitest does not emit a Go-style coverage profile. `fetch` is always stubbed (`vi.stubGlobal('fetch', …)` with `vi.unstubAllGlobals()` in the test setup's `afterEach`), so every scenario runs offline and deterministically.
