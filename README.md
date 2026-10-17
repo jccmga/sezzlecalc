@@ -9,9 +9,9 @@ A full-stack calculator — a Go REST API consumed by a React/Vite/TypeScript fr
 | `backend/internal/calc` — pure, stateless arithmetic domain (all seven operations) | ✅ Built & verified (100% coverage) |
 | `backend/internal/httpapi` + `cmd/server` — HTTP server, `POST /evaluate`, `GET /health` | ✅ Built & verified (97.9% coverage) |
 | `frontend/` — React/Vite/TypeScript calculator UI | ✅ Built & verified (75 tests, lint clean) |
-| Docker packaging for the full stack | ⏳ Later phase — **not yet present** (no compose file) |
+| Docker packaging for the full stack | ✅ Built — `docker compose up -d`, frontend `:3000` + backend `:8080` |
 
-The repository contains the Go backend, the React/Vite/TypeScript frontend, plus the agent harness and documentation. There is no `docker compose` configuration yet.
+The repository contains the Go backend, the React/Vite/TypeScript frontend, plus the agent harness and documentation. A root `docker-compose.yml` packages both layers; see "Docker (full stack)" below.
 
 ## Architecture
 
@@ -38,7 +38,7 @@ The repository contains the Go backend, the React/Vite/TypeScript frontend, plus
 │  │  lib/validation.ts parseEntry + binary/unary metadata      │      │
 │  │  lib/format.ts     formatNumber (12 significant digits)    │      │
 │  └────────────────────────────────────────────────────────────┘      │
-│   browser calls /api/evaluate → Vite dev proxy strips /api → :8080   │
+│   /api/evaluate → dev Vite proxy / prod nginx strip /api → :8080     │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -62,9 +62,12 @@ sezzlecalc/
 ├── README.md
 ├── opencode.json
 ├── .gitignore                      # ignores backend/coverage.txt, frontend/dist, node_modules
+├── docker-compose.yml              # backend (8080) + frontend (3000:80) services
 ├── backend/
 │   ├── go.mod                      # module sezzlecalc/backend; go 1.22; testify (test-only)
 │   ├── go.sum
+│   ├── Dockerfile                  # multi-stage static build → distroless static-debian13:nonroot
+│   ├── .dockerignore               # excludes local artifacts from the build context
 │   ├── coverage.txt                # git-ignored artifact from `make backend-cover`
 │   ├── cmd/server/main.go          # :8080, slog, httpapi.NewHandler, server timeouts
 │   └── internal/
@@ -77,6 +80,9 @@ sezzlecalc/
 ├── frontend/
 │   ├── package.json                # scripts: dev, build, test, lint, preview
 │   ├── package-lock.json
+│   ├── Dockerfile                  # node:24-alpine build → nginx:1.30-alpine
+│   ├── .dockerignore               # excludes node_modules/dist/.env from the build context
+│   ├── nginx.conf                  # SPA fallback + /api/ → backend:8080 proxy
 │   ├── vite.config.ts              # react + tailwind plugins, @ alias, /api proxy, Vitest block
 │   ├── tsconfig.json / tsconfig.app.json / tsconfig.node.json
 │   ├── eslint.config.js
@@ -113,6 +119,7 @@ sezzlecalc/
 - **Go** toolchain `>= 1.22` (the module declares `go 1.22` as its minimum and does not pin a `toolchain` directive).
 - **Node.js + npm** (the frontend pins `@types/node@^24`; Node 22/24 is expected — exact patches resolve via `npm install` into `package-lock.json`).
 - **make** (the root `Makefile` is the canonical entry point; the underlying `go`/`npm` commands work without it too).
+- **Docker Engine + Compose v2** (`docker compose version` works) — required only for the Docker path; the Go/Node path above works without it.
 
 ## Quick start
 
@@ -170,6 +177,39 @@ cd frontend && npm run dev
 
 Then open `http://localhost:5173` and press `1 2 × 4 =` → the display shows `48` after a single `POST /api/evaluate` (proxied to `/evaluate`) with `{"operation":"multiply","a":12,"b":4}`. With the backend stopped, the UI still renders and a computed key press shows `Could not reach the server`.
 
+### Docker (full stack)
+
+One command builds both images; one command runs the whole product (no Go/Node install needed):
+
+```sh
+docker compose build    # build backend + frontend images
+docker compose up -d    # start both containers
+docker compose ps       # both should be running
+```
+
+- Frontend: <http://localhost:3000> (nginx, container port 80).
+- Backend: <http://localhost:8080> (Go, container port 8080).
+
+Verify: open <http://localhost:3000>, press `1 2 × 4 =` → the display shows `48` after exactly one `POST /api/evaluate` (nginx strips `/api` and forwards `/evaluate`). The same path via curl:
+
+```sh
+curl -sS -X POST http://localhost:3000/api/evaluate \
+  -H 'Content-Type: application/json' \
+  -d '{"operation":"multiply","a":12,"b":4}'
+# → {"result":48}
+
+curl -sS http://localhost:8080/health
+# → {"status":"ok"}
+```
+
+Stop and remove the stack with `docker compose down`. The backend reads `PORT` (a bare port number, default `8080`); the compose file sets `PORT=8080`. The API base is inlined into the frontend bundle at build time — after changing `VITE_API_BASE_URL`, rebuild with `docker compose build` (a restart alone does not change it). The frontend runtime uses `nginx:1.30-alpine` (current stable), a deliberate deviation from an earlier `1.27` plan for security patches.
+
+Base images are pinned (no `latest`, no floating tags): `golang:1.26` (backend builder), `gcr.io/distroless/static-debian13:nonroot` (backend runtime — non-root uid `65532`, no shell), `node:24-alpine` (frontend builder), and `nginx:1.30-alpine` (frontend runtime).
+
+The first proxied request immediately after `docker compose up -d` can briefly return `502 Bad Gateway` — `depends_on` only waits for container start, not for the backend to accept connections (there is no healthcheck, since the distroless image has no shell). Retry once; this is expected, not a defect.
+
+Routing note: production nginx proxies only `location /api/` (trailing slash) and strips the `/api/` prefix before forwarding, whereas the Vite dev proxy matches the bare `/api` prefix and rewrites it away. The app itself only ever emits `/api/evaluate`, so the two behave identically in normal use — but a bare `GET /api` is served the SPA shell (`index.html`, `200`) in production, while the dev proxy forwards it to the backend.
+
 ### The canonical `make check` gate
 
 ```sh
@@ -179,7 +219,7 @@ make check  # backend-build backend-test backend-vet frontend-test frontend-lint
 
 `make check` is green: it runs all backend and frontend gates. The frontend suite reports **5 test files / 75 tests passed**; lint reports **0 errors** (one known `react-refresh/only-export-components` warning on the shadcn `buttonVariants` export, which is a warning, not an error).
 
-> Docker packaging is a later phase: there is no `docker compose` configuration yet, so there is no `docker compose up` command to run.
+> Docker packaging is available: see "Docker (full stack)" below for `docker compose build` / `docker compose up -d` / `docker compose down`.
 
 ## The `internal/calc` API
 
@@ -404,7 +444,7 @@ The REST API is governed by the `api-contract` skill (`.opencode/skills/api-cont
 - `GET /health` — liveness check. ✅ built
 - React frontend that validates and formats only (never performs arithmetic). ✅ built
 
-The remaining north-star item — Docker packaging for the full stack — is a later phase, not yet present.
+Docker packaging for the full stack is delivered: `docker compose up -d` serves the calculator at `http://localhost:3000`.
 
 ## Testing & coverage
 
@@ -412,7 +452,7 @@ The remaining north-star item — Docker packaging for the full stack — is a l
 
 - `internal/calc` tests are **table-driven** (`t.Run` per case), asserting both value and error via `errors.Is`, covering all seven operations, normalization, `0`/`-0.0`, every non-finite case, `sqrt` of a negative, `Arity`, and a concurrency test under `-race`.
 - `internal/httpapi` tests drive `NewHandler` end-to-end through `httptest`, asserting **status code + envelope shape + exact decoded value** — all seven operations, the full error taxonomy, arity-aware presence rules, the `Content-Type` gate, the 1 KiB cap, wrong methods, panic recovery, and negative-zero results.
-- `make backend-cover` reports **100%** for `internal/calc`, **97.9%** for `internal/httpapi`, and a **92.7%** module total. The only uncovered statements are two defensive non-finite-input backstop guards, unreachable over the wire because JSON cannot express `NaN`/`Inf`. `cmd/server/main.go` is untested by design (thin wiring).
+- `make backend-cover` reports **100%** for `internal/calc`, **97.9%** for `internal/httpapi`, and a **90.5%** module total. The only uncovered statements are two defensive non-finite-input backstop guards (unreachable over the wire because JSON cannot express `NaN`/`Inf`) plus `cmd/server/main.go` — untested by design (thin wiring, including the `PORT` read added by the Docker feature).
 
 ### Frontend
 
