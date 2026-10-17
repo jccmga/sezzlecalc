@@ -18,10 +18,10 @@ cd backend && go test -coverprofile=coverage.txt ./... && go tool cover -func=co
 
 ## Result
 
-- **Total: 92.7% statement coverage** across the module (`mode set`).
+- **Total: 90.5% statement coverage** across the module (`mode set`).
 - **`internal/calc` — 100.0%** (`Evaluate` 100.0%, `Arity` 100.0%).
 - **`internal/httpapi` — 97.9%** (`NewHandler` 100.0%, `evaluateHandler` 100.0%, `requirePost` 100.0%, `requireJSONContentType` 100.0%, `decodeEvaluateRequest` 100.0%, `validateOperands` 100.0%, `validateOperandPresence` 100.0%, `validateOperandFiniteness` 60.0%, `isNonFinite` 100.0%, `operandValue` 100.0%, `healthHandler` 100.0%, `writeError` 100.0%, `recover` 100.0%, `writeJSON` 100.0%).
-- **`cmd/server` — 0.0%** (`main()` has no tests by design; it is thin wiring only).
+- **`cmd/server` — 0.0%** (`main()` has no tests by design; it is thin wiring only — including the `PORT` env read added by the Docker packaging feature).
 - The artifact `backend/coverage.txt` is git-ignored (added to `.gitignore` in an earlier feature).
 
 ## `internal/calc` (pure domain)
@@ -73,7 +73,9 @@ The `httpapi` suite (`backend/internal/httpapi/httpapi_test.go`) drives `NewHand
 
 ### `cmd/server` — 0% by design
 
-`cmd/server/main.go`'s `main()` (0.0%) is deliberately untested: it only constructs a `slog.Logger`, calls `httpapi.NewHandler`, sets `http.Server` timeouts on `:8080`, and calls `ListenAndServe`. It contains no business logic (no `calc.Evaluate`, no JSON decode, no error mapping, no routing), so there is nothing meaningful to unit-test. This is why the whole-module `./...` number is not a single meaningful percentage — the two packages carry 100.0% and 97.9% respectively, and the entrypoint is wiring.
+`cmd/server/main.go`'s `main()` (0.0%) is deliberately untested: it only constructs a `slog.Logger`, calls `httpapi.NewHandler`, reads the `PORT` env var (defaulting to `8080`), sets `http.Server` timeouts, and calls `ListenAndServe`. It contains no business logic (no `calc.Evaluate`, no JSON decode, no error mapping, no routing), so there is nothing meaningful to unit-test. This is why the whole-module `./...` number is not a single meaningful percentage — the two packages carry 100.0% and 97.9% respectively, and the entrypoint is wiring.
+
+The Docker packaging feature added the three-statement `PORT` read to `main()`; that is why the module total moved from 92.7% (pre-Docker) to **90.5%**: `internal/calc` and `internal/httpapi` are unchanged, while `cmd/server` now carries a few more untested wiring statements. This is expected and by design.
 
 ## Scope note (no overstatement)
 
@@ -155,3 +157,15 @@ The full 12-significant-digit table: `48 → '48'`, `0 → '0'`, `-0 → '0'`, `
 ## Scope note
 
 The frontend coverage is described by the **five test files and their 75 passing tests** above — there is no statement-coverage percentage for `frontend/` because Vitest does not emit a Go-style coverage profile. `fetch` is always stubbed (`vi.stubGlobal('fetch', …)` with `vi.unstubAllGlobals()` in the test setup's `afterEach`), so every scenario runs offline and deterministically. The 320 px layout criterion (no horizontal scroll, every key ≥44×44) is **not** asserted by any test — jsdom has no layout engine — and is instead verified manually in a real headless browser (Chrome, 320×568 CSS px).
+
+## Docker packaging gate status (verified)
+
+The Docker packaging feature adds no Go or TypeScript test code (the only application-code change is the `PORT` read in `cmd/server/main.go`, which is untested wiring by design), so its gates are build/run evidence rather than test additions:
+
+| Gate | Result |
+|------|--------|
+| `docker compose build` | **PASS** (exit 0, both images built) |
+| `make check` | **PASS** (Docker-free — `backend-build backend-test backend-vet frontend-test frontend-lint frontend-build`) |
+| End-to-end `12 × 4 = 48` | **PASS** — `POST http://localhost:3000/api/evaluate` with `{"operation":"multiply","a":12,"b":4}` → `200 {"result":48}` |
+
+Published ports: frontend `3000 → 80` (nginx) and backend `8080 → 8080` (Go). The backend coverage figures above (`internal/calc` 100.0%, `internal/httpapi` 97.9%, total 90.5%) are unchanged by Docker packaging except for the widened `cmd/server` entrypoint described above.

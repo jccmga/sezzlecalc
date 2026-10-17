@@ -16,8 +16,13 @@ func main() {
 
 	handler := httpapi.NewHandler(logger)
 
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
 	srv := &http.Server{
-		Addr:              ":8080",
+		Addr:              ":" + port,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
