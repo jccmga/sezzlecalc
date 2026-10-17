@@ -217,4 +217,142 @@ describe('Calculator', () => {
     });
     await waitFor(() => expect(display()).toHaveTextContent('48'));
   });
+
+  it('C1: announces an error assertively in a single live region', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ok: false, status: 422, body: { error: 'division by zero' } }),
+    );
+    const user = userEvent.setup();
+    render(<Calculator />);
+
+    // Non-error state stays polite and is not an alert.
+    expect(display()).toHaveAttribute('aria-live', 'polite');
+    expect(display()).not.toHaveAttribute('role');
+
+    await user.click(button('5'));
+    await user.click(button('divide'));
+    await user.click(button('0'));
+    await user.click(button('equals'));
+
+    await waitFor(() => expect(display()).toHaveTextContent(/^division by zero$/));
+
+    expect(display()).toHaveAttribute('role', 'alert');
+    expect(display()).not.toHaveAttribute('aria-live'); // dropped entirely in error
+    expect(display()).toBeVisible();
+    expect(display().textContent).toBe('division by zero');
+    expect(document.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[role="alert"]')[0]).toBe(display());
+    expect(document.querySelectorAll('[aria-live="assertive"]')).toHaveLength(0);
+    expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(0);
+    expect(screen.getAllByText('division by zero')).toHaveLength(1);
+  });
+
+  it('C2: clears the previous result when an error replaces it', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ ok: true, status: 200, body: { result: 48 } }))
+      .mockResolvedValueOnce(
+        jsonResponse({ ok: false, status: 422, body: { error: 'division by zero' } }),
+      );
+    const user = userEvent.setup();
+    render(<Calculator />);
+
+    // 12 × 4 = → 48
+    await user.click(button('1'));
+    await user.click(button('2'));
+    await user.click(button('multiply'));
+    await user.click(button('4'));
+    await user.click(button('equals'));
+    await waitFor(() => expect(display()).toHaveTextContent('48'));
+
+    // 5 ÷ 0 = → error
+    await user.click(button('5'));
+    await user.click(button('divide'));
+    await user.click(button('0'));
+    await user.click(button('equals'));
+    await waitFor(() => expect(display()).toHaveTextContent(/^division by zero$/));
+
+    expect(display().textContent).toBe('division by zero');
+    expect(display()).not.toHaveTextContent('48');
+
+    const callsBefore = fetchMock.mock.calls.length;
+    await user.click(button('equals'));
+    expect(fetchMock).toHaveBeenCalledTimes(callsBefore);
+  });
+
+  it('C3: shows the transport error, keeps rendering, and re-enables the keypad', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const user = userEvent.setup();
+    render(<Calculator />);
+
+    await user.click(button('9'));
+    await user.click(button('square root'));
+
+    await waitFor(() => expect(display()).toHaveTextContent('Could not reach the server'));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(display()).toBeInTheDocument();
+    expect(display().textContent).toBe('Could not reach the server');
+    expect(screen.getByRole('region', { name: 'Calculator' })).toHaveAttribute(
+      'aria-busy',
+      'false',
+    );
+    for (const key of screen.getAllByRole('button')) {
+      expect(key).toBeEnabled();
+    }
+  });
+
+  it('C4: a fresh calculation after an error issues a new request', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ok: false, status: 422, body: { error: 'division by zero' } }),
+    );
+    const user = userEvent.setup();
+    render(<Calculator />);
+
+    await user.click(button('5'));
+    await user.click(button('divide'));
+    await user.click(button('0'));
+    await user.click(button('equals'));
+    await waitFor(() => expect(display()).toHaveTextContent(/^division by zero$/));
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, status: 200, body: { result: 4 } }));
+
+    await user.click(button('2')); // clears the error, starts a fresh entry
+    await user.click(button('add'));
+    await user.click(button('2'));
+    await user.click(button('equals'));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const secondInit = fetchMock.mock.calls[1][1];
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/evaluate');
+    expect(JSON.parse(secondInit?.body as string)).toEqual({
+      operation: 'add',
+      a: 2,
+      b: 2,
+    });
+
+    await waitFor(() => expect(display().textContent).toBe('4'));
+    expect(display()).not.toHaveTextContent('division by zero');
+  });
+
+  it('C3b: a non-JSON success body shows the transport error', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async (): Promise<unknown> => { throw new SyntaxError('bad json'); },
+    } as Response);
+    const user = userEvent.setup();
+    render(<Calculator />);
+
+    await user.click(button('9'));
+    await user.click(button('square root'));
+
+    await waitFor(() => expect(display()).toHaveTextContent('Could not reach the server'));
+    expect(screen.getByRole('region', { name: 'Calculator' })).toHaveAttribute(
+      'aria-busy',
+      'false',
+    );
+    for (const key of screen.getAllByRole('button')) {
+      expect(key).toBeEnabled();
+    }
+  });
 });

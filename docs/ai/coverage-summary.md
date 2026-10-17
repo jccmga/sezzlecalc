@@ -89,7 +89,7 @@ The `httpapi` suite (`backend/internal/httpapi/httpapi_test.go`) drives `NewHand
 
 ## Frontend coverage (Vitest)
 
-The frontend has **no Go-style `-coverprofile`**: Vitest reports test counts, not a statement-coverage percentage. Coverage here is therefore described as **test breadth** (what each suite exercises), not invented as a percentage. All 68 tests run under `environment: 'jsdom'` with `fetch` stubbed, so no test touches the network.
+The frontend has **no Go-style `-coverprofile`**: Vitest reports test counts, not a statement-coverage percentage. Coverage here is therefore described as **test breadth** (what each suite exercises), not invented as a percentage. All 75 tests run under `environment: 'jsdom'` with `fetch` stubbed, so no test touches the network.
 
 ## Command
 
@@ -101,13 +101,13 @@ which runs `vitest run` (non-interactive; `make check` calls it). Install first 
 
 ## Result
 
-- **4 test files / 68 tests passed** (0 failed, 0 skipped — no `it.skip`/`describe.skip`/`.todo(` anywhere in `frontend/src`).
+- **5 test files / 75 tests passed** (0 failed, 0 skipped — no `it.skip`/`describe.skip`/`.todo(`/`.only(`/`xit`/`xdescribe` anywhere in `frontend/src`).
 - `make frontend-lint` (`eslint .`) reports **0 errors**; one known `react-refresh/only-export-components` **warning** on the shadcn `buttonVariants` export (a warning, not an error).
 - `make frontend-build` (`tsc -b && vite build`) passes; TypeScript `strict` is on with no `@ts-ignore`/`@ts-expect-error`.
 
 ## What each suite covers
 
-### `src/components/Calculator.test.tsx` — 13 tests (component + state machine)
+### `src/components/Calculator.test.tsx` — 18 tests (component + state machine)
 
 Renders `<Calculator />` with a stubbed `fetch` and drives it with `@testing-library/user-event`. Queries are by role + accessible name, never by glyph text. It covers the three mandated component scenarios plus supporting behavior:
 
@@ -115,6 +115,21 @@ Renders `<Calculator />` with a stubbed `fetch` and drives it with `@testing-lib
 - **T-2 (unary path)** — `9 √` sends **exactly one** `POST /api/evaluate` with `{ operation: 'sqrt', a: 9 }` and asserts `'b' in body === false`; renders `3`.
 - **T-3 (invalid entry blocks the request)** — `5 Backspace √` leaves the entry empty so `fetch` is **never called** and the display stays `0`; a companion case asserts `=` with no pending operation issues no request.
 - Supporting cases: no request on mount; `±` toggles the sign without a request; `±` is a no-op on zero; a `422` error string renders verbatim; `AC` clears an error back to `0`; `busy` disables keys (with `aria-busy="true"`) but keeps `AC` enabled; operator replacement (`12 + 4 × =` → `multiply`); a unary preserves a pending `lhs`/`operator` (`9 + 3 √ =` → `{operation:'add', a:9, b:3}`); keyboard entry (`12*4{Enter}`) matches the keypad.
+
+The `fe-polish` pass added five component cases (the 13 pre-existing tests are untouched):
+
+- **C1** — `5 ÷ 0 =` with a `422` stub: before the error the display is `aria-live="polite"` with no `role`; after the error it has `role="alert"` and **no** `aria-live` attribute (one alert region, zero polite/assertive regions, the error string exactly once in the document).
+- **C2** — `12 × 4 =` → `48`, then `5 ÷ 0 =` → the display `textContent` is exactly `division by zero` with no `48`, and `=` in the error state issues no request (call count unchanged).
+- **C3** — `9 √` with `fetch` rejecting `TypeError('Failed to fetch')` → display shows exactly `Could not reach the server`, the region stays mounted with `aria-busy="false"`, every key is enabled, and exactly one request was issued.
+- **C3b** — `9 √` with a non-JSON 2xx body → the same transport error, `aria-busy="false"`, keypad enabled.
+- **C4** — `5 ÷ 0 =` → error, then `2 + 2 =` with a `200 {result:4}` stub → exactly 2 requests total, the second body `{operation:'add', a:2, b:2}`, display `4`, error text gone.
+
+### `src/lib/calculator-machine.test.ts` — 2 tests (reducer; new file)
+
+Pure reducer unit tests (no React, no fetch, no DOM):
+
+- **C2** — a `resolve` failure from a state holding `entry: '48'`, `lhs: 12`, `operator: 'add'` (with `preserve: true`) yields exactly `{ entry: '', lhs: null, operator: null, status: 'error', error: 'division by zero' }`, proving a prior value cannot survive an error.
+- **C4 (reducer)** — a `digit` after `status: 'error'` yields `{ entry: '2', lhs: null, operator: null, status: 'editing', error: null }`, the reducer precondition for the C4 retry flow.
 
 ### `src/lib/api.test.ts` — 13 tests (the `evaluate` client; mandated T-4)
 
@@ -139,4 +154,4 @@ The full 12-significant-digit table: `48 → '48'`, `0 → '0'`, `-0 → '0'`, `
 
 ## Scope note
 
-The frontend coverage is described by the **four test files and their 68 passing tests** above — there is no statement-coverage percentage for `frontend/` because Vitest does not emit a Go-style coverage profile. `fetch` is always stubbed (`vi.stubGlobal('fetch', …)` with `vi.unstubAllGlobals()` in the test setup's `afterEach`), so every scenario runs offline and deterministically.
+The frontend coverage is described by the **five test files and their 75 passing tests** above — there is no statement-coverage percentage for `frontend/` because Vitest does not emit a Go-style coverage profile. `fetch` is always stubbed (`vi.stubGlobal('fetch', …)` with `vi.unstubAllGlobals()` in the test setup's `afterEach`), so every scenario runs offline and deterministically. The 320 px layout criterion (no horizontal scroll, every key ≥44×44) is **not** asserted by any test — jsdom has no layout engine — and is instead verified manually in a real headless browser (Chrome, 320×568 CSS px).

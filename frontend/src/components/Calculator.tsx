@@ -156,7 +156,7 @@ export default function Calculator() {
             aria-label={k.ariaLabel}
             disabled={isBusy && k.label !== 'AC'}
             onClick={k.onPress}
-            className={cn(k.colSpan2 ? 'col-span-2 w-full h-auto' : 'aspect-square w-full h-auto')}
+            className={cn(k.colSpan2 ? 'col-span-2 w-full h-auto min-h-11' : 'aspect-square w-full h-auto min-h-11')}
           >
             {k.label}
           </Button>
