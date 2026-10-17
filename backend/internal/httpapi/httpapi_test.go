@@ -82,10 +82,21 @@ func TestEvaluate(t *testing.T) {
 		{"divide-by-zero/positive", `{"operation":"divide","a":5,"b":0}`, http.StatusUnprocessableEntity, 0, "division by zero"},
 		{"unknown/mod", `{"operation":"mod","a":8,"b":2}`, http.StatusUnprocessableEntity, 0, "invalid operation"},
 		{"unknown/empty", `{"operation":"","a":8,"b":2}`, http.StatusUnprocessableEntity, 0, "invalid operation"},
-		{"unknown/power", `{"operation":"power","a":8,"b":2}`, http.StatusUnprocessableEntity, 0, "invalid operation"},
-		{"unknown/sqrt", `{"operation":"sqrt","a":8,"b":2}`, http.StatusUnprocessableEntity, 0, "invalid operation"},
-		{"unknown/percent", `{"operation":"percent","a":8,"b":2}`, http.StatusUnprocessableEntity, 0, "invalid operation"},
-		{"non-finite/result", `{"operation":"multiply","a":1e308,"b":1e308}`, http.StatusUnprocessableEntity, 0, "non-finite result"},
+		{"power", `{"operation":"power","a":2,"b":10}`, http.StatusOK, 1024, ""},
+		{"sqrt/b-omitted", `{"operation":"sqrt","a":9}`, http.StatusOK, 3, ""},
+		{"percent/b-omitted", `{"operation":"percent","a":50}`, http.StatusOK, 0.5, ""},
+		{"unary/normalized", `{"operation":" SQRT ","a":9}`, http.StatusOK, 3, ""},
+		{"unary/b-null", `{"operation":"sqrt","a":9,"b":null}`, http.StatusOK, 3, ""},
+		{"unary-missing-a", `{"operation":"sqrt"}`, http.StatusBadRequest, 0, "invalid input"},
+		{"unary-null-a", `{"operation":"sqrt","a":null}`, http.StatusBadRequest, 0, "invalid input"},
+		{"unary-numeric-b", `{"operation":"sqrt","a":9,"b":2}`, http.StatusBadRequest, 0, "invalid input"},
+		{"unary-numeric-b/percent", `{"operation":"percent","a":50,"b":1}`, http.StatusBadRequest, 0, "invalid input"},
+		{"sqrt/negative", `{"operation":"sqrt","a":-1}`, http.StatusUnprocessableEntity, 0, "square root of negative number"},
+		{"non-finite/power/overflow", `{"operation":"power","a":10,"b":400}`, http.StatusUnprocessableEntity, 0, "non-finite result"},
+		{"non-finite/power/zero-neg-exp", `{"operation":"power","a":0,"b":-1}`, http.StatusUnprocessableEntity, 0, "non-finite result"},
+		{"non-finite/result", `{"operation":"multiply","a":1e308,"b":10}`, http.StatusUnprocessableEntity, 0, "non-finite result"},
+		{"unknown/mod-missing-b", `{"operation":"mod","a":8}`, http.StatusUnprocessableEntity, 0, "invalid operation"},
+		{"unknown/empty-no-operands", `{"operation":""}`, http.StatusUnprocessableEntity, 0, "invalid operation"},
 		{"bad-json", `{"operation":`, http.StatusBadRequest, 0, "invalid input"},
 		{"empty-body", ``, http.StatusBadRequest, 0, "invalid input"},
 		{"trailing-data", `{"operation":"add","a":1,"b":2} extra`, http.StatusBadRequest, 0, "invalid input"},
@@ -96,6 +107,7 @@ func TestEvaluate(t *testing.T) {
 		{"wrong-type-a", `{"operation":"add","a":"x","b":2}`, http.StatusBadRequest, 0, "invalid input"},
 		{"wrong-type-operation", `{"operation":3,"a":1,"b":2}`, http.StatusBadRequest, 0, "invalid input"},
 		{"overflow-1e400", `{"operation":"add","a":1e400,"b":2}`, http.StatusBadRequest, 0, "invalid input"},
+		{"overflow-1e999", `{"operation":"add","a":1e999,"b":2}`, http.StatusBadRequest, 0, "invalid input"},
 		{"nan-literal", `{"operation":"add","a":NaN,"b":2}`, http.StatusBadRequest, 0, "invalid input"},
 		{"infinity-literal", `{"operation":"add","a":Infinity,"b":2}`, http.StatusBadRequest, 0, "invalid input"},
 	}
@@ -139,6 +151,38 @@ func TestEvaluateNegativeZeroDivisor(t *testing.T) {
 
 	require.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 	assertErrorBody(t, rec, "division by zero")
+}
+
+func TestEvaluateNegativeZeroResult(t *testing.T) {
+	negZero := math.Copysign(0, -1)
+
+	cases := []struct {
+		name string
+		op   string
+	}{
+		{"sqrt", "sqrt"},
+		{"percent", "percent"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"operation": tc.op, "a": negZero})
+			require.NoError(t, err)
+
+			// Guard: a plain -0.0 in Go collapses to +0.0, so assert the wire
+			// bytes actually carry a negative zero before exercising the handler.
+			require.Contains(t, string(body), `"a":-0`)
+
+			rec := serve(t, NewHandler(nil), http.MethodPost, "/evaluate", string(body), true, "application/json")
+
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var got evaluateResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+			require.Equal(t, 0.0, got.Result)
+			require.True(t, math.Signbit(got.Result))
+		})
+	}
 }
 
 func TestEvaluateContentType(t *testing.T) {
