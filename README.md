@@ -2,184 +2,118 @@
 
 A full-stack calculator — a Go REST API consumed by a React/Vite/TypeScript frontend. The backend is a pure arithmetic domain (`internal/calc`) behind a thin HTTP layer (`internal/httpapi` + `cmd/server`); the frontend is a calculator UI that **validates and formats only** and delegates every computed value to the server.
 
-## Current state
+![The running calculator](calculator-screenshot.png)
 
-| Layer | Status |
-|-------|--------|
-| `backend/internal/calc` — pure, stateless arithmetic domain (all seven operations) | ✅ Built & verified (100% coverage) |
-| `backend/internal/httpapi` + `cmd/server` — HTTP server, `POST /evaluate`, `GET /health` | ✅ Built & verified (97.9% coverage) |
-| `frontend/` — React/Vite/TypeScript calculator UI | ✅ Built & verified (75 tests, lint clean) |
-| Docker packaging for the full stack | ✅ Built — `docker compose up -d`, frontend `:3000` + backend `:8080` |
+## Features
 
-The repository contains the Go backend, the React/Vite/TypeScript frontend, plus the agent harness and documentation. A root `docker-compose.yml` packages both layers; see "Docker (full stack)" below.
+- **Calculator:** seven operations — `add`, `subtract`, `multiply`, `divide`, `power`, `sqrt`, `percent` — one binary operation at a time (no chaining or precedence); unary `sqrt`/`percent` evaluate the current entry immediately; keypad plus keyboard input; every result is displayed with at most 12 significant digits; exactly one request is sent per evaluating press.
+- **API:** `POST /evaluate` + `GET /health` on plain paths (no `/api` prefix on the server); JSON envelopes `{"result": <number>}` on success and `{"error": "<string>"}` on failure; a compact `400`/`405`/`422`/`500` error taxonomy (see the HTTP API section); an `application/json` `Content-Type` gate and a 1 KiB request-body cap.
+- **Architecture:** a pure `internal/calc` domain with no `net/http`; a thin `internal/httpapi` layer with a single error→status mapper; a frontend that validates and formats only and never performs arithmetic; the `api-contract` skill as the single source of truth for the REST contract, so the two layers cannot drift.
+- **Packaging:** Docker compose runs the full stack — frontend on `:3000`, backend on `:8080`.
+- **Verification:** all gates green — `make check` (backend build/test/vet; frontend 5 test files / 75 tests; lint 0 errors, 1 known warning), backend statement coverage 100.0% (`internal/calc`), 97.9% (`internal/httpapi`), 90.5% module total, 17 backend tests PASS / 0 FAIL / 0 SKIP, `docker compose build` exit 0.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                             sezzlecalc                               │
-│                                                                      │
 │  backend/  (Go module sezzlecalc/backend, :8080)                     │
-│  ┌────────────────────────────────────────────────────────────┐      │
-│  │  cmd/server/main.go   slog → httpapi.NewHandler → :8080    │      │
-│  │  internal/httpapi     POST /evaluate · GET /health         │      │
-│  │                       single error→status mapper           │      │
-│  │  internal/calc        pure domain: Evaluate · Arity        │      │
-│  └────────────────────────────────────────────────────────────┘      │
-│                          ▲  plain paths (/evaluate, /health)         │
-│                          │  no /api prefix, no CORS                  │
-│                          │                                           │
+│    internal/httpapi     POST /evaluate · GET /health · error mapper  │
+│    internal/calc        pure domain: Evaluate · Arity                │
+│                          ▲  plain paths, no /api prefix, no CORS     │
 │  frontend/  (Vite 7 + React 19 + TS)                                 │
-│  ┌────────────────────────────────────────────────────────────┐      │
-│  │  components/Calculator.tsx  key grid + keyboard wiring     │      │
-│  │  components/Display.tsx     display panel                  │      │
-│  │  lib/calculator-machine.ts  state machine                  │      │
-│  │  lib/api.ts        never-throws evaluate() client          │      │
-│  │  lib/validation.ts parseEntry + binary/unary metadata      │      │
-│  │  lib/format.ts     formatNumber (12 significant digits)    │      │
-│  └────────────────────────────────────────────────────────────┘      │
+│    lib/          api · validation · format · calculator-machine      │
 │   /api/evaluate → dev Vite proxy / prod nginx strip /api → :8080     │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-The backend deliberately separates a **pure domain** (`internal/calc`) from a **thin HTTP layer** (`internal/httpapi`) and a **thin entrypoint** (`cmd/server/main.go`). The domain never touches `net/http`; the HTTP layer owns encoding, routing, method enforcement, the `Content-Type` gate, the 1 KiB body cap, arity-aware operand presence, panic recovery, and the single error→status mapper, delegating all arithmetic to `calc.Evaluate` (and arity to `calc.Arity`).
+The backend separates a **pure domain** (`internal/calc`) from a **thin HTTP layer** (`internal/httpapi`) and a **thin entrypoint** (`cmd/server/main.go` — `slog` → `httpapi.NewHandler` → `:8080`). The domain never touches `net/http`; the HTTP layer owns encoding, routing, method enforcement, the `Content-Type` gate, the 1 KiB body cap, arity-aware operand presence, panic recovery, and the single error→status mapper, delegating all arithmetic to `calc.Evaluate` (and arity to `calc.Arity`).
 
-The frontend is a **dumb-but-exact** state machine: it never performs arithmetic. Every computed display value originates from a `200 {"result": <number>}` response. The four pure modules under `src/lib/` (`api`, `validation`, `format`, `calculator-machine`) hold every "smart" decision, and the dev proxy keeps the backend CORS-free.
+The frontend is a **dumb-but-exact** state machine: it never performs arithmetic, so every displayed value originates from a `200 {"result": <number>}` response; the four pure modules under `src/lib/` hold every "smart" decision, and the dev proxy keeps the backend CORS-free.
 
 ## Tech stack
 
-- **Backend:** Go (module `sezzlecalc/backend`, minimum `go 1.22`), stdlib-only in production code. The single third-party dependency is `github.com/stretchr/testify` (test-only, plus its indirect `go.yaml.in/yaml/v3`).
-- **Frontend:** Vite 7 + React 19 + TypeScript (strict) + Tailwind v4 + shadcn/ui (`Button`). Testing: Vitest 3 + React Testing Library + `@testing-library/user-event` + `@testing-library/jest-dom`.
-- **Testing:** Go's standard `testing` package (table-driven, `-race`, `httptest`) for the backend; Vitest (jsdom) for the frontend.
+- **Backend:** Go (module `sezzlecalc/backend`, minimum `go 1.22`), stdlib-only in production code; tested with the standard `testing` package (table-driven, `-race`, `httptest`). The single third-party dependency is `github.com/stretchr/testify` (test-only, plus its indirect `go.yaml.in/yaml/v3`).
+- **Frontend:** Vite 7 + React 19 + TypeScript (strict) + Tailwind v4 + shadcn/ui (`Button`). Testing: Vitest 3 (jsdom) + React Testing Library + `@testing-library/user-event` + `@testing-library/jest-dom`.
 
 ## Repository layout
 
 ```
 sezzlecalc/
-├── AGENTS.md                       # repository guide for agents
-├── Makefile                        # canonical build/test entry points
-├── PROMPTS.md                      # curated AI-prompt trail
-├── README.md
-├── opencode.json
+├── AGENTS.md / Makefile / PROMPTS.md / README.md / opencode.json
+├── calculator-screenshot.png       # the running calculator (referenced above)
 ├── .gitignore                      # ignores backend/coverage.txt, frontend/dist, node_modules
 ├── docker-compose.yml              # backend (8080) + frontend (3000:80) services
 ├── backend/
-│   ├── go.mod                      # module sezzlecalc/backend; go 1.22; testify (test-only)
-│   ├── go.sum
-│   ├── Dockerfile                  # multi-stage static build → distroless static-debian13:nonroot
-│   ├── .dockerignore               # excludes local artifacts from the build context
-│   ├── coverage.txt                # git-ignored artifact from `make backend-cover`
+│   ├── go.mod / go.sum             # module sezzlecalc/backend; go 1.22; testify (test-only)
+│   ├── Dockerfile / .dockerignore  # static build → distroless static-debian13:nonroot
 │   ├── cmd/server/main.go          # :8080, slog, httpapi.NewHandler, server timeouts
 │   └── internal/
-│       ├── calc/
-│       │   ├── calc.go             # Evaluate + Arity + sentinel errors
-│       │   └── calc_test.go        # table-driven + concurrency tests
-│       └── httpapi/
-│           ├── httpapi.go          # NewHandler, handlers, writeError mapper, recovery
-│           └── httpapi_test.go     # httptest suite
+│       ├── calc/                   # calc.go + calc_test.go (Evaluate, Arity, sentinels)
+│       └── httpapi/                # httpapi.go + httpapi_test.go (NewHandler, mapper)
 ├── frontend/
-│   ├── package.json                # scripts: dev, build, test, lint, preview
-│   ├── package-lock.json
-│   ├── Dockerfile                  # node:24-alpine build → nginx:1.30-alpine
-│   ├── .dockerignore               # excludes node_modules/dist/.env from the build context
+│   ├── package.json / package-lock.json   # scripts: dev, build, test, lint, preview
+│   ├── Dockerfile / .dockerignore         # node:24-alpine build → nginx:1.30-alpine
 │   ├── nginx.conf                  # SPA fallback + /api/ → backend:8080 proxy
 │   ├── vite.config.ts              # react + tailwind plugins, @ alias, /api proxy, Vitest block
 │   ├── tsconfig.json / tsconfig.app.json / tsconfig.node.json
-│   ├── eslint.config.js
-│   ├── components.json             # shadcn config
-│   ├── index.html
+│   │   + eslint.config.js / components.json / index.html
 │   └── src/
 │       ├── main.tsx / App.tsx / index.css / vite-env.d.ts
-│       ├── components/
-│       │   ├── Calculator.tsx        # key grid + keyboard wiring
-│       │   ├── Display.tsx           # display panel
-│       │   ├── Calculator.test.tsx   # T-1..T-3 + C1..C4 scenarios
-│       │   └── ui/button.tsx         # shadcn Button + 4 calculator variants
-│       ├── lib/
-│       │   ├── utils.ts              # cn (shadcn)
-│       │   ├── api.ts / api.test.ts
-│       │   ├── validation.ts / validation.test.ts
-│       │   ├── format.ts / format.test.ts
-│       │   ├── calculator-machine.ts        # state machine (reducer)
-│       │   └── calculator-machine.test.ts   # reducer unit tests (C2, C4)
+│       ├── components/             # Calculator.tsx + Calculator.test.tsx, Display.tsx, ui/button.tsx
+│       ├── lib/                    # utils.ts; api, validation, format, calculator-machine (+ their tests)
 │       └── test/setup.ts           # jest-dom + cleanup
 ├── docs/
-│   ├── ai/
-│   │   ├── coverage-summary.md     # full-stack coverage summary (backend + frontend)
-│   │   ├── prompt-log.md           # raw, complete prompt appendix
-│   │   └── skills.md
+│   ├── ai/                         # coverage-summary.md, prompt-log.md, skills.md
 │   └── opencode/
-│       ├── prds/                   # calc-domain-package, http-api-layer, extra-operations, frontend-calculator
-│       └── plans/                  # matching implementation plans
-└── .opencode/                      # agent harness: agents/, commands/, skills/
+│       ├── prds/                   # one PRD per feature
+│       │   ├── calc-domain-package.md
+│       │   ├── http-api-layer.md
+│       │   ├── extra-operations.md
+│       │   ├── frontend-calculator.md
+│       │   ├── fe-polish.md
+│       │   └── docker-packaging.md
+│       └── plans/                  # matching implementation plan per PRD
+│           ├── calc-domain-package.md
+│           ├── http-api-layer.md
+│           ├── extra-operations.md
+│           ├── frontend-calculator.md
+│           ├── fe-polish.md
+│           └── docker-packaging.md
+└── .opencode/                      # agent harness: agents/, commands/, plugins/, skills/
 ```
 
 ## Prerequisites
 
 - **Go** toolchain `>= 1.22` (the module declares `go 1.22` as its minimum and does not pin a `toolchain` directive).
 - **Node.js + npm** (the frontend pins `@types/node@^24`; Node 22/24 is expected — exact patches resolve via `npm install` into `package-lock.json`).
-- **make** (the root `Makefile` is the canonical entry point; the underlying `go`/`npm` commands work without it too).
-- **Docker Engine + Compose v2** (`docker compose version` works) — required only for the Docker path; the Go/Node path above works without it.
+- **make** (the root `Makefile` is the canonical entry point; the underlying `go`/`npm` commands work without it too). **Docker Engine + Compose v2** (`docker compose version` works) is required only for the Docker path.
 
 ## Quick start
 
-### Backend
-
-From the repository root:
+From the repository root (`make help` lists every target). `make check` runs every gate below — it is green; see Testing & coverage for the recorded results:
 
 ```sh
-make backend-build   # cd backend && go build ./...
-make backend-test    # cd backend && go test -race ./...
-make backend-vet     # cd backend && go vet ./... && test -z "$(gofmt -l .)"
-make backend-cover   # writes backend/coverage.txt and prints a per-function report
-```
-
-Run the server:
-
-```sh
-cd backend && go run ./cmd/server
-```
-
-The server listens on **`:8080`** and logs to stderr. It sets `ReadHeaderTimeout: 5s`, `ReadTimeout: 10s`, `WriteTimeout: 10s`, and `IdleTimeout: 60s`.
-
-### Frontend
-
-From the repository root:
-
-```sh
+make backend-build      # cd backend && go build ./...
+make backend-test       # cd backend && go test -race ./...
+make backend-vet        # cd backend && go vet ./... && test -z "$(gofmt -l .)"
+make backend-cover      # writes backend/coverage.txt and prints a per-function report
 make frontend-install   # cd frontend && npm install
 make frontend-test      # cd frontend && npm run test    (= vitest run)
 make frontend-lint      # cd frontend && npm run lint    (= eslint .)
 make frontend-build     # cd frontend && npm run build   (= tsc -b && vite build)
+make check              # all build + test gates above
 ```
 
-Run the dev server (assumes the backend is running on `:8080`):
+### Run the backend
 
-```sh
-cd frontend && npm install && npm run dev
-```
+`cd backend && go run ./cmd/server` starts the server on **`:8080`** (logs to stderr; `ReadHeaderTimeout: 5s`, `ReadTimeout: 10s`, `WriteTimeout: 10s`, `IdleTimeout: 60s`).
 
-Open the URL Vite prints (default `http://localhost:5173`). The dev server proxies `/api/*` → `http://localhost:8080/*` (stripping the `/api` prefix), so the browser never talks to the backend cross-origin.
+### Run the frontend (dev)
 
-### Full stack (both layers)
-
-In one terminal run the backend, in another the frontend:
-
-```sh
-# terminal 1
-cd backend && go run ./cmd/server
-```
-
-```sh
-# terminal 2
-cd frontend && npm run dev
-```
-
-Then open `http://localhost:5173` and press `1 2 × 4 =` → the display shows `48` after a single `POST /api/evaluate` (proxied to `/evaluate`) with `{"operation":"multiply","a":12,"b":4}`. With the backend stopped, the UI still renders and a computed key press shows `Could not reach the server`.
+`cd frontend && npm install && npm run dev`, then open the URL Vite prints (default `http://localhost:5173`). The dev server proxies `/api/*` → `http://localhost:8080/*` (stripping the `/api` prefix), so the browser never talks to the backend cross-origin. With both layers running, pressing `1 2 × 4 =` shows `48` after a single `POST /api/evaluate` (proxied to `/evaluate`) with `{"operation":"multiply","a":12,"b":4}`; with the backend stopped, the UI still renders and a computed key press shows `Could not reach the server`.
 
 ### Docker (full stack)
-
-One command builds both images; one command runs the whole product (no Go/Node install needed):
 
 ```sh
 docker compose build    # build backend + frontend images
@@ -187,10 +121,7 @@ docker compose up -d    # start both containers
 docker compose ps       # both should be running
 ```
 
-- Frontend: <http://localhost:3000> (nginx, container port 80).
-- Backend: <http://localhost:8080> (Go, container port 8080).
-
-Verify: open <http://localhost:3000>, press `1 2 × 4 =` → the display shows `48` after exactly one `POST /api/evaluate` (nginx strips `/api` and forwards `/evaluate`). The same path via curl:
+Frontend: <http://localhost:3000> (nginx, container port 80) · Backend: <http://localhost:8080> (Go, container port 8080). Verify: open <http://localhost:3000>, press `1 2 × 4 =` → the display shows `48` after exactly one `POST /api/evaluate` (nginx strips `/api` and forwards `/evaluate`). The same path via curl:
 
 ```sh
 curl -sS -X POST http://localhost:3000/api/evaluate \
@@ -202,24 +133,11 @@ curl -sS http://localhost:8080/health
 # → {"status":"ok"}
 ```
 
-Stop and remove the stack with `docker compose down`. The backend reads `PORT` (a bare port number, default `8080`); the compose file sets `PORT=8080`. The API base is inlined into the frontend bundle at build time — after changing `VITE_API_BASE_URL`, rebuild with `docker compose build` (a restart alone does not change it). The frontend runtime uses `nginx:1.30-alpine` (current stable), a deliberate deviation from an earlier `1.27` plan for security patches.
-
-Base images are pinned (no `latest`, no floating tags): `golang:1.26` (backend builder), `gcr.io/distroless/static-debian13:nonroot` (backend runtime — non-root uid `65532`, no shell), `node:24-alpine` (frontend builder), and `nginx:1.30-alpine` (frontend runtime).
+Stop and remove the stack with `docker compose down`. The backend reads `PORT` (a bare port number, default `8080`); the compose file sets `PORT=8080`. The API base is inlined into the frontend bundle at build time — after changing `VITE_API_BASE_URL`, rebuild with `docker compose build` (a restart alone does not change it). Base images are pinned (no `latest`, no floating tags): `golang:1.26` (backend builder), `gcr.io/distroless/static-debian13:nonroot` (backend runtime — non-root uid `65532`, no shell), `node:24-alpine` (frontend builder), `nginx:1.30-alpine` (frontend runtime, current stable).
 
 The first proxied request immediately after `docker compose up -d` can briefly return `502 Bad Gateway` — `depends_on` only waits for container start, not for the backend to accept connections (there is no healthcheck, since the distroless image has no shell). Retry once; this is expected, not a defect.
 
 Routing note: production nginx proxies only `location /api/` (trailing slash) and strips the `/api/` prefix before forwarding, whereas the Vite dev proxy matches the bare `/api` prefix and rewrites it away. The app itself only ever emits `/api/evaluate`, so the two behave identically in normal use — but a bare `GET /api` is served the SPA shell (`index.html`, `200`) in production, while the dev proxy forwards it to the backend.
-
-### The canonical `make check` gate
-
-```sh
-make help   # list all targets
-make check  # backend-build backend-test backend-vet frontend-test frontend-lint frontend-build
-```
-
-`make check` is green: it runs all backend and frontend gates. The frontend suite reports **5 test files / 75 tests passed**; lint reports **0 errors** (one known `react-refresh/only-export-components` warning on the shadcn `buttonVariants` export, which is a warning, not an error).
-
-> Docker packaging is available: see "Docker (full stack)" below for `docker compose build` / `docker compose up -d` / `docker compose down`.
 
 ## The `internal/calc` API
 
@@ -380,39 +298,14 @@ The error envelope is always `{"error":"<string>"}` with no `result` key; `curl 
 
 ## Frontend — architecture
 
-The frontend is Vite 7 + React 19 + TypeScript strict, styled with Tailwind v4 and shadcn/ui (a single `Button` component). All "smart" behavior lives in four pure `src/lib` modules (`api`, `validation`, `format`, `calculator-machine`); `Calculator.tsx` is the wiring, while `calculator-machine.ts` holds the state machine.
+The frontend is Vite 7 + React 19 + TypeScript strict, styled with Tailwind v4 and shadcn/ui (a single `Button` component). All "smart" behavior lives in four pure `src/lib` modules; `Calculator.tsx` is the wiring.
 
-### `src/lib/validation.ts` — the entry guard and operation metadata
-
-The single source of binary-vs-unary truth in the app. It exports `BinaryOperation`/`UnaryOperation`/`Operation` types, the `BINARY_OPERATIONS`/`UNARY_OPERATIONS` metadata arrays, the `isBinaryOperation`/`isUnaryOperation` type guards, the `ENTRY_PATTERN` regex, and `parseEntry(raw: string): number | null` — the one guard between the display buffer and the wire. It accepts `12`, `-5`, `3.`, `0.`, `.5`, `1e+21`, `1.5e-9`, `-0`; it rejects empty/whitespace, `'-'`, `'.'`, `'abc'`, `'0x10'`, `'1,000'`, `'Infinity'`, `'NaN'`, and non-finite `'1e999'`. A `null` result blocks any request.
-
-### `src/lib/format.ts` — the display rule
-
-One function, `formatNumber(value: number): string`, with `MAX_SIGNIFICANT_DIGITS = 12`. It returns `'Error'` for non-finite input (defensive only), normalizes `-0` → `'0'`, renders `value.toPrecision(12)` and strips trailing zeros (and a trailing `.`) after the decimal point, preserving any exponent unchanged. JS's `toPrecision` switches to exponential form at exponent ≥ 12 or < −6, which gives the compact scientific notation for very large/small magnitudes. It is applied **exactly once** per computed value, never during typing.
-
-### `src/lib/api.ts` — the never-throwing request client
-
-`evaluate(request): Promise<EvaluateOutcome>` where `EvaluateOutcome` is `{ ok: true; value: number } | { ok: false; error: string }`. It **never throws or rejects**. It posts `JSON.stringify(request)` to `EVALUATE_URL` (`${API_BASE_URL}/evaluate`) with `Content-Type: application/json` and a 10 s abort (`REQUEST_TIMEOUT_MS`). On a 2xx it reads `result` (must be a finite number, else transport error); on a 4xx/5xx it reads `error` (must be a non-empty string, rendered **verbatim**); any thrown/rejected path (network, abort/timeout, non-JSON body) returns `TRANSPORT_ERROR` = `'Could not reach the server'`. The `EvaluateRequest` union (`{operation, a, b}` for binary, `{operation, a}` for unary) makes it a type error to send `b` to `sqrt`/`percent`.
-
-### `src/lib/calculator-machine.ts` — the state machine
-
-A pure reducer module (no React, no `fetch`, no DOM). It exports `DisplayStatus` (`editing | awaiting | result | error | busy`), `CalculatorState` (`{ entry, lhs, operator, status, error }`), `INITIAL`, the `Action` union (`digit`, `decimal`, `sign`, `clear`, `backspace`, `operator`, `begin`, `resolve`), and `reducer`. Digits/`.` build the entry (at most one decimal point); `±` toggles the sign as text only; `AC` (`clear`) resets to `INITIAL`; Backspace removes the last character (keyboard-only); a binary operator stores `lhs` and selects the operation (replacing, never evaluating, if a second operand was typed); `begin`/`resolve` commit an evaluation — `=` resolves with `preserve: false`, `√`/`%` resolve with `preserve: true` (keeping a pending `lhs`/`operator`). While `busy`, every transition except `clear` is ignored, guaranteeing **exactly one** request per evaluating press.
-
-### `src/components/Calculator.tsx` — wiring, keypad, keyboard
-
-`useReducer(reducer, INITIAL)` holds the state, plus a `requestToken` ref for staleness. `evaluateCurrent` builds the request, bumps the token, dispatches `begin`, and on resolution dispatches `resolve` only if the token is still current; `pressEquals`, `pressUnary`, and `clear` wrap it (`clear` bumps the token to invalidate any in-flight response). A single `window` keydown listener maps digits, `.`, `+ - * /`, `Enter`/`=`, `Backspace`, and `Escape` (never `preventDefault` on `Tab`). The key grid is 4 columns × 6 rows (a two-key scientific strip `√ xʸ` above the keypad, `0` spanning two columns, operators rightmost), all 21 keys are real `<button type="button">` with unique accessible names, and it renders `<Display … />` above the keypad.
-
-### `src/components/Display.tsx` — the display
-
-A presentational `<output>` with `aria-label="Calculator display"` and `data-testid="calculator-display"`, whose announcement semantics are derived from `status === 'error'`: in the error state it renders `role="alert"` and **drops `aria-live` entirely** (a single assertive + atomic live region, no double announcement); in every non-error state it keeps `aria-live="polite"` and no `role`. Text precedence: error → the `error` string (falling back to `Unknown error`), empty entry → `0`, otherwise the entry. Size thresholds: ≤10 characters renders `text-4xl`, else `text-2xl`; an error renders `text-lg break-words`.
-
-## Calculator behavior summary
-
-- **One binary operation at a time** — operator presses never evaluate; `=` sends a single `POST /evaluate` `{operation, a, b}`. There is no chaining, precedence, or parser.
-- **No client-side arithmetic** — the UI only edits text (digits, `.`, `±`, Backspace) and formats. Every computed value comes from a server `200 {"result": <number>}`.
-- **Unary `sqrt` / `percent`** — these evaluate the current entry immediately with `{operation, a}` (no `b` key). `percent(a) = a / 100`, so `50 %` displays the bare ratio `0.5`.
-- **Exactly one request per evaluating press**, guarded by the `busy` status (not timing); zero requests on mount; `fetch` is always stubbed in tests.
-- **Server error strings are rendered verbatim** (`division by zero`, `invalid input`, `square root of negative number`, `invalid operation`, `non-finite result`); the only client-authored string is the transport message `Could not reach the server`.
+- **`src/lib/validation.ts` — the entry guard and operation metadata.** The single source of binary-vs-unary truth: the `BinaryOperation`/`UnaryOperation` types, the `BINARY_OPERATIONS`/`UNARY_OPERATIONS` arrays, the `isBinaryOperation`/`isUnaryOperation` type guards, the `ENTRY_PATTERN` regex, and `parseEntry(raw: string): number | null` — the one guard between the display buffer and the wire. It accepts `12`, `-5`, `3.`, `0.`, `.5`, `1e+21`, `1.5e-9`, `-0`; it rejects empty/whitespace, `'-'`, `'.'`, `'abc'`, `'0x10'`, `'1,000'`, `'Infinity'`, `'NaN'`, and non-finite `'1e999'`. A `null` result blocks any request.
+- **`src/lib/format.ts` — the display rule.** One function, `formatNumber(value: number): string`, with `MAX_SIGNIFICANT_DIGITS = 12`: `value.toPrecision(12)` with trailing zeros (and a trailing `.`) stripped, `-0` → `'0'`, exponents preserved. JS's `toPrecision` switches to exponential form at exponent ≥ 12 or < −6, giving compact scientific notation for very large/small magnitudes. Applied **exactly once** per computed value, never during typing.
+- **`src/lib/api.ts` — the never-throwing request client.** `evaluate(request): Promise<EvaluateOutcome>` with `EvaluateOutcome` = `{ ok: true; value: number } | { ok: false; error: string }`. It **never throws or rejects**: it posts to `EVALUATE_URL` (`${API_BASE_URL}/evaluate`) with `Content-Type: application/json` and a 10 s abort. On a 2xx it reads `result` (must be a finite number, else transport error); on a 4xx/5xx it reads `error` (a non-empty string, rendered **verbatim**); any thrown/rejected path (network, abort/timeout, non-JSON body) returns `TRANSPORT_ERROR` = `'Could not reach the server'`. The `EvaluateRequest` union (`{operation, a, b}` binary / `{operation, a}` unary) makes sending `b` to `sqrt`/`percent` a type error.
+- **`src/lib/calculator-machine.ts` — the state machine.** A pure reducer module (no React, no `fetch`, no DOM): `DisplayStatus` (`editing | awaiting | result | error | busy`), `CalculatorState`, `INITIAL`, the `Action` union, and `reducer`. Digits/`.` build the entry (at most one decimal point); `±` toggles the sign as text only; `AC` resets to `INITIAL`; Backspace removes the last character (keyboard-only); a binary operator stores `lhs` and selects the operation (replacing, never evaluating); `begin`/`resolve` commit an evaluation — `=` with `preserve: false`, `√`/`%` with `preserve: true` (keeping a pending `lhs`/`operator`). While `busy`, every transition except `clear` is ignored, guaranteeing **exactly one** request per evaluating press.
+- **`src/components/Calculator.tsx` — wiring, keypad, keyboard.** `useReducer(reducer, INITIAL)` plus a `requestToken` ref for staleness: `evaluateCurrent` builds the request, bumps the token, dispatches `begin`, and on resolution dispatches `resolve` only if the token is still current (`clear` bumps the token to invalidate any in-flight response). One `window` keydown listener maps digits, `.`, `+ - * /`, `Enter`/`=`, `Backspace`, and `Escape`. The key grid is 4 columns × 6 rows (a two-key scientific strip `√ xʸ` above the keypad, `0` spanning two columns, operators rightmost); all 21 keys are real `<button type="button">` with unique accessible names.
+- **`src/components/Display.tsx` — the display.** A presentational `<output>` with `aria-label="Calculator display"` and `data-testid="calculator-display"`. On `status === 'error'` it renders `role="alert"` and **drops `aria-live` entirely** (one assertive + atomic live region, no double announcement); in every non-error state it keeps `aria-live="polite"` and no `role`. Text precedence: error → the `error` string (falling back to `Unknown error`), empty entry → `0`, otherwise the entry. Size thresholds: ≤10 characters renders `text-4xl`, else `text-2xl`; an error renders `text-lg break-words`.
 
 ## Design decisions & assumptions
 
@@ -436,37 +329,24 @@ A presentational `<output>` with `aria-label="Calculator display"` and `data-tes
 - **44 px minimum tap targets** — every key carries `min-h-11` (44 px) so the spanning `√`/`xʸ` keys (which have no square sibling to size the row) reach the ≥44×44 target; square keys are unaffected (58 px). At a 320 px viewport there is no horizontal scroll.
 - **Stale results never survive an error** — the reducer clears `entry`/`lhs`/`operator` on every failed resolution, and retry is manual re-entry (a digit after an error starts a fresh calculation and issues a new request).
 
-## North star
-
-The REST API is governed by the `api-contract` skill (`.opencode/skills/api-contract/SKILL.md`). Both layers are **built and verified**:
-
-- `POST /evaluate` — evaluate a single arithmetic operation (`add`, `subtract`, `multiply`, `divide`, `power`, `sqrt`, `percent`). ✅ built
-- `GET /health` — liveness check. ✅ built
-- React frontend that validates and formats only (never performs arithmetic). ✅ built
-
-Docker packaging for the full stack is delivered: `docker compose up -d` serves the calculator at `http://localhost:3000`.
-
 ## Testing & coverage
 
 ### Backend
 
-- `internal/calc` tests are **table-driven** (`t.Run` per case), asserting both value and error via `errors.Is`, covering all seven operations, normalization, `0`/`-0.0`, every non-finite case, `sqrt` of a negative, `Arity`, and a concurrency test under `-race`.
-- `internal/httpapi` tests drive `NewHandler` end-to-end through `httptest`, asserting **status code + envelope shape + exact decoded value** — all seven operations, the full error taxonomy, arity-aware presence rules, the `Content-Type` gate, the 1 KiB cap, wrong methods, panic recovery, and negative-zero results.
-- `make backend-cover` reports **100%** for `internal/calc`, **97.9%** for `internal/httpapi`, and a **90.5%** module total. The only uncovered statements are two defensive non-finite-input backstop guards (unreachable over the wire because JSON cannot express `NaN`/`Inf`) plus `cmd/server/main.go` — untested by design (thin wiring, including the `PORT` read added by the Docker feature).
+- `internal/calc` tests are **table-driven** (`t.Run` per case), asserting value and error via `errors.Is`, covering all seven operations, normalization, `0`/`-0.0`, every non-finite case, `sqrt` of a negative, `Arity`, and a concurrency test under `-race`. `internal/httpapi` tests drive `NewHandler` end-to-end through `httptest`, asserting **status code + envelope shape + exact decoded value** — all seven operations, the full error taxonomy, arity-aware presence rules, the `Content-Type` gate, the 1 KiB cap, wrong methods, panic recovery, and negative-zero results.
+- `make backend-cover` reports **100%** for `internal/calc`, **97.9%** for `internal/httpapi`, and a **90.5%** module total. The only uncovered statements are two defensive non-finite-input backstop guards (unreachable over the wire because JSON cannot express `NaN`/`Inf`) plus `cmd/server/main.go` — untested by design (thin wiring, including the `PORT` read). A fresh `go test -race -count=1 -v ./...` run records **17 PASS / 0 FAIL / 0 SKIP**.
 
 ### Frontend
 
-- Stack: **Vitest 3 + React Testing Library + `@testing-library/user-event` + `@testing-library/jest-dom`**, `environment: 'jsdom'`. `fetch` is always stubbed (`vi.stubGlobal`), so no test performs real network I/O; async assertions use `waitFor`/`findBy`.
-- Five test files, **75 tests**, run via `make frontend-test` (`npm run test` = `vitest run`, non-interactive):
-  - `Calculator.test.tsx` — the mandated scenarios **T-1** (binary path sends exactly one `POST /api/evaluate` `{operation:'multiply', a:12, b:4}` and renders `48`), **T-2** (unary `sqrt` posts `{operation:'sqrt', a:9}` with no `b` key and renders `3`), **T-3** (an empty entry blocks the request — `fetch` is never called), plus supporting cases: no request on mount, `±` sign toggle, server error rendered verbatim, `AC` clears an error, `busy` disables keys, operator replacement, unary-preserves-pending-operator, and keyboard entry. The polish pass added five component cases: **C1** (an error renders `role="alert"` with `aria-live` dropped — one assertive live region, no double announcement), **C2** (a stale result is cleared when an error replaces it, and `=` in error issues no request), **C3** (a `fetch` rejection shows `Could not reach the server`, keeps rendering, and re-enables the keypad), **C3b** (a non-JSON 2xx body shows the same transport error), and **C4** (a fresh calculation after an error issues a new request).
-  - `calculator-machine.test.ts` — reducer unit tests: **C2** (a failed `resolve` clears `entry`/`lhs`/`operator` even with `preserve: true`) and **C4** (a digit after `error` clears the error and returns to `editing`).
-  - `api.test.ts` — the mandated **T-4** status/transport table: success `200`, `422`/`400`/`500` verbatim errors, network failure, abort, non-JSON bodies, and a 2xx without a finite numeric `result`, all resolving (never rejecting) to the exact expected outcome, plus the request init (`POST`, `Content-Type`, no `b` key on unary).
-  - `validation.test.ts` — `parseEntry` accept/reject tables and the binary/unary metadata + type guards.
-  - `format.test.ts` — the `formatNumber` 12-significant-digit table (`48 → '48'`, `-0 → '0'`, `1/3 → '0.333333333333'`, `1e12 → '1e+12'`, `1e-7 → '1e-7'`, `Infinity → 'Error'`, …).
-- Lint: `make frontend-lint` (`eslint .`) reports **0 errors**; there is one known `react-refresh/only-export-components` **warning** on the shadcn `buttonVariants` export (a warning, not an error).
+- **Vitest 3 + React Testing Library + `@testing-library/user-event` + `@testing-library/jest-dom`**, `environment: 'jsdom'`; `fetch` is always stubbed, so no test performs real network I/O. Five test files, **75 tests** (`make frontend-test` = `vitest run`, non-interactive):
+  - `Calculator.test.tsx` — component behavior scenarios: the binary path sends exactly one `POST /api/evaluate` `{operation:'multiply', a:12, b:4}` and renders `48`; the unary `sqrt` path posts `{operation:'sqrt', a:9}` with no `b` key and renders `3`; an empty entry blocks the request (`fetch` is never called). Plus: no request on mount, sign toggle, verbatim server errors, `AC` clearing an error, `busy` disabling keys, operator replacement, unary-preserves-pending-operator, keyboard entry, the assertive error announcement (`role="alert"`, `aria-live` dropped), stale-result clearing, transport-failure UX (message renders, keypad re-enables, non-JSON 2xx included), and retry after an error.
+  - `calculator-machine.test.ts` — reducer unit tests: a failed `resolve` clears `entry`/`lhs`/`operator` even with `preserve: true`; a digit after `error` returns to `editing`.
+  - `api.test.ts` — api-client status/transport handling: `200` success, `422`/`400`/`500` verbatim errors, network failure, abort, non-JSON bodies, and a 2xx without a finite numeric `result`, all resolving (never rejecting) to the exact expected outcome, plus the request init (`POST`, `Content-Type`, no `b` key on unary).
+  - `validation.test.ts` — `parseEntry` accept/reject tables and the binary/unary metadata + type guards. `format.test.ts` — the `formatNumber` 12-significant-digit table (`48 → '48'`, `-0 → '0'`, `1/3 → '0.333333333333'`, `1e12 → '1e+12'`, `1e-7 → '1e-7'`, `Infinity → 'Error'`, …).
+- Lint: `make frontend-lint` (`eslint .`) reports **0 errors**; one known `react-refresh/only-export-components` **warning** on the shadcn `buttonVariants` export (a warning, not an error).
 
 See [`docs/ai/coverage-summary.md`](docs/ai/coverage-summary.md) for the full per-function backend breakdown and the frontend breadth summary.
 
 ## AI-assisted development
 
-This project was delivered through a multi-agent pipeline (PRD → plan → plan review → implementation → verification → docs), feature by feature: the domain package, the HTTP layer, the extra operations, the frontend scaffold + calculator, and the UI accessibility/robustness polish. The curated prompt trail lives in [`PROMPTS.md`](PROMPTS.md); the complete raw log is [`docs/ai/prompt-log.md`](docs/ai/prompt-log.md).
+This project was developed with AI assistance; the curated prompt trail is [`PROMPTS.md`](PROMPTS.md) and the complete raw log is [`docs/ai/prompt-log.md`](docs/ai/prompt-log.md).
