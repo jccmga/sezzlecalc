@@ -91,6 +91,39 @@ permissions:
     resource: "git show *"
     effect: allow
   - action: shell
+    resource: "pwd"
+    effect: allow
+  - action: shell
+    resource: "git rev-parse *"
+    effect: allow
+  - action: shell
+    resource: "git branch *"
+    effect: allow
+  - action: shell
+    resource: "git check-ignore *"
+    effect: allow
+  - action: shell
+    resource: "cd *"
+    effect: allow
+  - action: shell
+    resource: "npm install *"
+    effect: allow
+  - action: shell
+    resource: "npm run test *"
+    effect: allow
+  - action: shell
+    resource: "npm run build *"
+    effect: allow
+  - action: shell
+    resource: "npm run lint *"
+    effect: allow
+  - action: shell
+    resource: "npx eslint *"
+    effect: allow
+  - action: shell
+    resource: "go tool cover *"
+    effect: allow
+  - action: shell
     resource: "make *"
     effect: allow
   - action: subagent

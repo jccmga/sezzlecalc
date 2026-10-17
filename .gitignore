@@ -109,3 +109,8 @@ sketch
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,linux,react,go,visualstudiocode
+
+### frontend ###
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
