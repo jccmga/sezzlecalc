@@ -14,7 +14,8 @@ export default function Display({ entry, status, error }: DisplayProps) {
 
   return (
     <output
-      aria-live="polite"
+      role={isError ? 'alert' : undefined}
+      aria-live={isError ? undefined : 'polite'}
       aria-label="Calculator display"
       data-testid="calculator-display"
       className={cn(

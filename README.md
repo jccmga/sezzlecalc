@@ -8,7 +8,7 @@ A full-stack calculator — a Go REST API consumed by a React/Vite/TypeScript fr
 |-------|--------|
 | `backend/internal/calc` — pure, stateless arithmetic domain (all seven operations) | ✅ Built & verified (100% coverage) |
 | `backend/internal/httpapi` + `cmd/server` — HTTP server, `POST /evaluate`, `GET /health` | ✅ Built & verified (97.9% coverage) |
-| `frontend/` — React/Vite/TypeScript calculator UI | ✅ Built & verified (68 tests, lint clean) |
+| `frontend/` — React/Vite/TypeScript calculator UI | ✅ Built & verified (75 tests, lint clean) |
 | Docker packaging for the full stack | ⏳ Later phase — **not yet present** (no compose file) |
 
 The repository contains the Go backend, the React/Vite/TypeScript frontend, plus the agent harness and documentation. There is no `docker compose` configuration yet.
@@ -87,14 +87,15 @@ sezzlecalc/
 │       ├── components/
 │       │   ├── Calculator.tsx        # key grid + keyboard wiring
 │       │   ├── Display.tsx           # display panel
-│       │   ├── Calculator.test.tsx   # T-1..T-3 + supporting scenarios
+│       │   ├── Calculator.test.tsx   # T-1..T-3 + C1..C4 scenarios
 │       │   └── ui/button.tsx         # shadcn Button + 4 calculator variants
 │       ├── lib/
 │       │   ├── utils.ts              # cn (shadcn)
 │       │   ├── api.ts / api.test.ts
 │       │   ├── validation.ts / validation.test.ts
 │       │   ├── format.ts / format.test.ts
-│       │   └── calculator-machine.ts # state machine (reducer)
+│       │   ├── calculator-machine.ts        # state machine (reducer)
+│       │   └── calculator-machine.test.ts   # reducer unit tests (C2, C4)
 │       └── test/setup.ts           # jest-dom + cleanup
 ├── docs/
 │   ├── ai/
@@ -176,7 +177,7 @@ make help   # list all targets
 make check  # backend-build backend-test backend-vet frontend-test frontend-lint frontend-build
 ```
 
-`make check` is green: it runs all backend and frontend gates. The frontend suite reports **4 test files / 68 tests passed**; lint reports **0 errors** (one known `react-refresh/only-export-components` warning on the shadcn `buttonVariants` export, which is a warning, not an error).
+`make check` is green: it runs all backend and frontend gates. The frontend suite reports **5 test files / 75 tests passed**; lint reports **0 errors** (one known `react-refresh/only-export-components` warning on the shadcn `buttonVariants` export, which is a warning, not an error).
 
 > Docker packaging is a later phase: there is no `docker compose` configuration yet, so there is no `docker compose up` command to run.
 
@@ -363,7 +364,7 @@ A pure reducer module (no React, no `fetch`, no DOM). It exports `DisplayStatus`
 
 ### `src/components/Display.tsx` — the display
 
-A presentational `<output aria-live="polite">` with `aria-label="Calculator display"` and `data-testid="calculator-display"`. Text precedence: error → the `error` string (falling back to `Unknown error`), empty entry → `0`, otherwise the entry. Size thresholds: ≤10 characters renders `text-4xl`, else `text-2xl`; an error renders `text-lg break-words`.
+A presentational `<output>` with `aria-label="Calculator display"` and `data-testid="calculator-display"`, whose announcement semantics are derived from `status === 'error'`: in the error state it renders `role="alert"` and **drops `aria-live` entirely** (a single assertive + atomic live region, no double announcement); in every non-error state it keeps `aria-live="polite"` and no `role`. Text precedence: error → the `error` string (falling back to `Unknown error`), empty entry → `0`, otherwise the entry. Size thresholds: ≤10 characters renders `text-4xl`, else `text-2xl`; an error renders `text-lg break-words`.
 
 ## Calculator behavior summary
 
@@ -391,6 +392,9 @@ A presentational `<output aria-live="polite">` with `aria-label="Calculator disp
 - **Precision trade-off on chained calculations** — computed values are stored in `entry` already formatted (12 significant digits), so a chain uses the *displayed* value: `1 ÷ 3 =` shows `0.333333333333`, then `× 3 =` yields `0.999999999999`. This is accepted; there is no hidden exact-value field.
 - **`VITE_API_BASE_URL` is a base prefix** — it defaults to `/api` and has trailing slashes stripped; the full endpoint is `${base}/evaluate`. It is not a full endpoint URL. Setting it to `http://localhost:8080` would bypass the proxy and fail CORS (the backend has no CORS middleware) — documented but unsupported. No `.env` file is committed.
 - **The dev proxy is mandatory** — `/api/*` → `/*` to `http://localhost:8080`, so `/api/evaluate` reaches `/evaluate`. Omitting the `rewrite` produces 404s.
+- **Assertive (not polite) error announcement** — the single display element swaps to `role="alert"` and drops `aria-live` only while `status === 'error'`; `role="alert"` is inherently assertive *and* atomic, so this is one live region with no double announcement. Non-error announcements (digits, results) stay polite.
+- **44 px minimum tap targets** — every key carries `min-h-11` (44 px) so the spanning `√`/`xʸ` keys (which have no square sibling to size the row) reach the ≥44×44 target; square keys are unaffected (58 px). At a 320 px viewport there is no horizontal scroll.
+- **Stale results never survive an error** — the reducer clears `entry`/`lhs`/`operator` on every failed resolution, and retry is manual re-entry (a digit after an error starts a fresh calculation and issues a new request).
 
 ## North star
 
@@ -413,8 +417,9 @@ The remaining north-star item — Docker packaging for the full stack — is a l
 ### Frontend
 
 - Stack: **Vitest 3 + React Testing Library + `@testing-library/user-event` + `@testing-library/jest-dom`**, `environment: 'jsdom'`. `fetch` is always stubbed (`vi.stubGlobal`), so no test performs real network I/O; async assertions use `waitFor`/`findBy`.
-- Four test files, **68 tests**, run via `make frontend-test` (`npm run test` = `vitest run`, non-interactive):
-  - `Calculator.test.tsx` — the mandated scenarios **T-1** (binary path sends exactly one `POST /api/evaluate` `{operation:'multiply', a:12, b:4}` and renders `48`), **T-2** (unary `sqrt` posts `{operation:'sqrt', a:9}` with no `b` key and renders `3`), **T-3** (an empty entry blocks the request — `fetch` is never called), plus supporting cases: no request on mount, `±` sign toggle, server error rendered verbatim, `AC` clears an error, `busy` disables keys, operator replacement, unary-preserves-pending-operator, and keyboard entry.
+- Five test files, **75 tests**, run via `make frontend-test` (`npm run test` = `vitest run`, non-interactive):
+  - `Calculator.test.tsx` — the mandated scenarios **T-1** (binary path sends exactly one `POST /api/evaluate` `{operation:'multiply', a:12, b:4}` and renders `48`), **T-2** (unary `sqrt` posts `{operation:'sqrt', a:9}` with no `b` key and renders `3`), **T-3** (an empty entry blocks the request — `fetch` is never called), plus supporting cases: no request on mount, `±` sign toggle, server error rendered verbatim, `AC` clears an error, `busy` disables keys, operator replacement, unary-preserves-pending-operator, and keyboard entry. The polish pass added five component cases: **C1** (an error renders `role="alert"` with `aria-live` dropped — one assertive live region, no double announcement), **C2** (a stale result is cleared when an error replaces it, and `=` in error issues no request), **C3** (a `fetch` rejection shows `Could not reach the server`, keeps rendering, and re-enables the keypad), **C3b** (a non-JSON 2xx body shows the same transport error), and **C4** (a fresh calculation after an error issues a new request).
+  - `calculator-machine.test.ts` — reducer unit tests: **C2** (a failed `resolve` clears `entry`/`lhs`/`operator` even with `preserve: true`) and **C4** (a digit after `error` clears the error and returns to `editing`).
   - `api.test.ts` — the mandated **T-4** status/transport table: success `200`, `422`/`400`/`500` verbatim errors, network failure, abort, non-JSON bodies, and a 2xx without a finite numeric `result`, all resolving (never rejecting) to the exact expected outcome, plus the request init (`POST`, `Content-Type`, no `b` key on unary).
   - `validation.test.ts` — `parseEntry` accept/reject tables and the binary/unary metadata + type guards.
   - `format.test.ts` — the `formatNumber` 12-significant-digit table (`48 → '48'`, `-0 → '0'`, `1/3 → '0.333333333333'`, `1e12 → '1e+12'`, `1e-7 → '1e-7'`, `Infinity → 'Error'`, …).
@@ -424,4 +429,4 @@ See [`docs/ai/coverage-summary.md`](docs/ai/coverage-summary.md) for the full pe
 
 ## AI-assisted development
 
-This project was delivered through a multi-agent pipeline (PRD → plan → plan review → implementation → verification → docs), feature by feature: the domain package, the HTTP layer, the extra operations, and the frontend scaffold + calculator. The curated prompt trail lives in [`PROMPTS.md`](PROMPTS.md); the complete raw log is [`docs/ai/prompt-log.md`](docs/ai/prompt-log.md).
+This project was delivered through a multi-agent pipeline (PRD → plan → plan review → implementation → verification → docs), feature by feature: the domain package, the HTTP layer, the extra operations, the frontend scaffold + calculator, and the UI accessibility/robustness polish. The curated prompt trail lives in [`PROMPTS.md`](PROMPTS.md); the complete raw log is [`docs/ai/prompt-log.md`](docs/ai/prompt-log.md).
